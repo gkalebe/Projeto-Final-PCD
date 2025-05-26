@@ -1,0 +1,37 @@
+import matplotlib.pyplot as plt  # matplotlib.pyplot: usado para criar gráficos.
+import numpy as np               # numpy: usado aqui para manipulação de arrays numéricos (por exemplo, criar posições para as barras).
+
+# Nomes dos processos públicos
+processos = ("Licitação", "Concessão de Benefício", "Fiscalização")
+
+# Métricas associadas a cada processo
+metricas_processos = {
+    'Tempo Médio (dias)': (120, 45, 30),
+    'Custo Médio (R$)': (15000, 5000, 8000),
+    'Satisfação do Usuário (%)': (65, 80, 75),
+}
+
+x = np.arange(len(processos))  # Cria um array com os índices: [0, 1, 2]
+width = 0.25  # Define a largura de cada barra no gráfico
+multiplier = 0  # controle do deslocamento horizontal das barras
+
+fig, ax = plt.subplots(layout='constrained')   # layout='constrained' ajusta automaticamente o layout para evitar sobreposição de elementos visuais.
+
+# Adiciona as barras ao gráfico
+for metrica, valores in metricas_processos.items():
+    offset = width * multiplier               # Calcula o deslocamento horizontal das barras
+    barras = ax.bar(x + offset, valores, width, label=metrica)      # Cria as barras no gráfico
+    ax.bar_label(barras, padding=3)            # Adiciona os valores (rótulos) acima de cada barra
+    multiplier += 1              # Atualiza o multiplicador para a próxima métrica
+
+# Configurações visuais
+ax.set_ylabel('Valores')    
+ax.set_title('Comparação de Processos em Órgãos Públicos')   
+ax.set_xticks(x + width, processos)    
+ax.legend(loc='upper left', ncols=3)     
+ax.set_ylim(0, 20000)  # ajustado para o maior valor (custo)   
+
+plt.show()  #Exibe o gráfico na tela.
+
+#Lorrany M. :)
+#obs: tentei comentar o maximo para vocês entenderem
