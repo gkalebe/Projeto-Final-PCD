@@ -1,125 +1,102 @@
 import pandas as pd
+import numpy as np
+from concurrent.futures import ProcessPoolExecutor, as_completed
 import os
-import glob
-import threading
-import time
-import matplotlib.pyplot as plt
+import zipfile
 
-# Pasta onde estão os arquivos CSV
-PASTA_CSV = r"C:\Users\Gabriel Kalebe\Projeto-Final-PCD\Dados\Dados"
 
-# Nomes dos arquivos que vamos criar no final
-ARQUIVO_RESUMO = "ResumoMetas.csv"
-ARQUIVO_CONSOLIDADO = "Consolidado.csv"
-LOCK = threading.Lock()
+#  Descompactar os arquivos CSV
+with zipfile.ZipFile('Dados (1).zip', 'r') as zip_ref:
+    zip_ref.extractall('dados')
 
-def calcular_meta1(df):
+
+#  Ler e consolidar os CSVs
+pasta_dados = 'dados'
+arquivos_csv = [arq for arq in os.listdir(pasta_dados) if arq.endswith('.csv')]
+lista_df = []
+
+for arquivo in arquivos_csv:
+    caminho = os.path.join(pasta_dados, arquivo)
     try:
-        julgados = df['julgados_2025'].sum()
-        novos = df['casos_novos_2025'].sum()
-        des = df['dessobrestados_2025'].sum()
-        sus = df['suspensos_2025'].sum()
-        denom = novos + des - sus
-        return round((julgados / denom) * 100, 2) if denom != 0 else 'NA'
-    except KeyError:
-        return 'NA'
+        df = pd.read_csv(caminho, encoding='utf-8', sep=';')
+    except:
+        df = pd.read_csv(caminho, encoding='latin1', sep=';')
+    df['fonte_arquivo'] = arquivo
+    lista_df.append(df)
 
-def calcular_meta2a(df):
-    try:
-        julgados = df['julgados_1grau_2025'].sum()
-        distribuidos = df['distribuidos_1grau_2025'].sum()
-        suspensos = df['suspensos_1grau_2025'].sum()
-        denom = distribuidos - suspensos
-        return round((julgados / denom) * (1000 / 8), 2) if denom != 0 else 'NA'
-    except KeyError:
-        return 'NA'
+consolidado_df = pd.concat(lista_df, ignore_index=True)
+consolidado_df.to_csv('Consolidado.csv', index=False, encoding='utf-8', sep=';')
 
-def calcular_meta4a(df):
-    try:
-        julgados = df['julgados_acao_admin_2025'].sum()
-        distribuidos = df['distribuidos_acao_admin_2025'].sum()
-        suspensos = df['suspensos_acao_admin_2025'].sum()
-        denom = distribuidos - suspensos
-        return round((julgados / denom) * (1000 / 6.5), 2) if denom != 0 else 'NA'
-    except KeyError:
-        return 'NA'
+print(" Consolidado.csv gerado com sucesso (paralelo)!")
 
-def processar_arquivo(caminho_csv, resultados, dados_consolidados):
-    try:
-        # Lê o arquivo CSV
-        df = pd.read_csv(caminho_csv)
-        nome_tribunal = os.path.splitext(os.path.basename(caminho_csv))[0]
 
-        # Calcula as metas para esse tribunal
-        meta1 = calcular_meta1(df)
-        meta2a = calcular_meta2a(df)
-        meta4a = calcular_meta4a(df)
+#  Cálculo Paralelo das Metas
+df = pd.read_csv('Consolidado.csv', sep=';', encoding='utf-8')
+tribunais = df['ramo_justica'].unique()
 
-        resultado = {
-            'tribunal': nome_tribunal,
-            'meta1': meta1,
-            'meta2A': meta2a,
-            'meta4A': meta4a
-        }
 
-        # Protege a escrita nas listas compartilhadas entre threads
-        with LOCK:
+def calcular_metas_tribunal(tribunal):
+    df_tribunal = df[df['ramo_justica'] == tribunal]
+
+    def meta(julgados, distribuidores, suspensos, fator):
+        try:
+            julgados_soma = df_tribunal[julgados].sum()
+            distribuidores_soma = sum([df_tribunal[col].sum() for col in distribuidores])
+            suspensos_soma = df_tribunal[suspensos].sum()
+
+            divisor = distribuidores_soma - suspensos_soma
+            if divisor == 0:
+                return 'NA'
+            resultado = (julgados_soma / divisor) * fator
+            return round(resultado, 2)
+        except KeyError:
+            return 'NA'
+
+    resultado = {
+        'ramo_justica': tribunal,
+        'Meta1': meta('julgados_2025', ['casos_novos_2025', 'dessobrestados_2025'], 'suspensos_2025', 100)
+    }
+
+    metas_parametros = {
+        'Meta2A': (1000/8),
+        'Meta2B': (1000/9),
+        'Meta2C': (1000/9.5),
+        'Meta2ANT': 100,
+        'Meta4A': (1000/6.5),
+        'Meta4B': 100,
+        'Meta6': 100,
+        'Meta7A': (1000/5),
+        'Meta7B': (1000/5),
+        'Meta8A': (1000/7.5),
+        'Meta8B': (1000/9),
+        'Meta10A': (1000/9),
+        'Meta10B': (1000/10)
+    }
+
+    for meta_nome, fator in metas_parametros.items():
+        resultado[meta_nome] = meta('julgados_2025', ['distribuidos_2025'], 'suspensos_2025', fator)
+
+    return resultado
+
+
+resultados = []
+
+print('🚀 Iniciando processamento paralelo...')
+
+with ProcessPoolExecutor() as executor:
+    tarefas = {executor.submit(calcular_metas_tribunal, tribunal): tribunal for tribunal in tribunais}
+
+    for future in as_completed(tarefas):
+        tribunal = tarefas[future]
+        try:
+            resultado = future.result()
             resultados.append(resultado)
-            dados_consolidados.append(df)
+            print(f" Concluído: {tribunal}")
+        except Exception as e:
+            print(f" Erro no tribunal {tribunal}: {e}")
 
-    except Exception as e:
-        print(f"Erro no arquivo {caminho_csv}: {e}")
 
-def main():
-    # Pega todos os arquivos CSV da pasta
-    arquivos_csv = glob.glob(os.path.join(PASTA_CSV, "*.csv"))
-    print(f"Encontrei estes arquivos: {arquivos_csv}")
+df_resumo = pd.DataFrame(resultados)
+df_resumo.to_csv('ResumoMetas.csv', index=False, sep=';', encoding='utf-8')
 
-    resultados = []
-    dados_consolidados = []
-    threads = []
-
-    tempo_inicio = time.time()
-
-    # Cria uma thread para cada arquivo para processar em paralelo
-    for caminho in arquivos_csv:
-        t = threading.Thread(target=processar_arquivo, args=(caminho, resultados, dados_consolidados))
-        t.start()
-        threads.append(t)
-
-    # Espera todas as threads terminarem
-    for t in threads:
-        t.join()
-
-    tempo_fim = time.time()
-    duracao = tempo_fim - tempo_inicio
-    print(f"Processo paralelo levou {duracao:.2f} segundos")
-
-    # Salva o resumo das metas em um CSV
-    df_resultado = pd.DataFrame(resultados)
-    df_resultado.to_csv(ARQUIVO_RESUMO, index=False, encoding='utf-8')
-
-    if dados_consolidados:
-        df_consolidado = pd.concat(dados_consolidados, ignore_index=True)
-        # Salva os dados consolidados em partes para evitar travar
-        df_consolidado.to_csv(ARQUIVO_CONSOLIDADO, index=False, encoding='utf-8', chunksize=100000)
-    else:
-        print("Não encontrei dados para juntar. Confere os arquivos na pasta.")
-
-    # Faz gráfico para cada meta
-    for meta in ['meta1', 'meta2A', 'meta4A']:
-        df_plot = df_resultado[df_resultado[meta] != 'NA'].copy()
-        df_plot[meta] = pd.to_numeric(df_plot[meta])
-        df_plot.sort_values(by=meta, ascending=False, inplace=True)
-
-        plt.figure(figsize=(12, 6))
-        plt.bar(df_plot['tribunal'], df_plot[meta], color='skyblue')
-        plt.xticks(rotation=90)
-        plt.ylabel(f'Desempenho {meta} (%)')
-        plt.title(f'Cumprimento da {meta.upper()} por Tribunal')
-        plt.tight_layout()
-        plt.savefig(f"grafico_{meta}.png")
-        print(f"Salvei o gráfico {f'grafico_{meta}.png'}")
-
-if __name__ == "__main__":
-    main()
+print(" ResumoMetas.csv gerado com sucesso (paralelo)!")
