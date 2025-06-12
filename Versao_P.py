@@ -7,7 +7,6 @@ import time
 from numba import jit
 import dask.dataframe as dd
 
-
 #---------------------------------------------------------------- Calculo de Metas --------------------------------------------------------------------------------------
 
 @jit(nopython=True)
@@ -74,6 +73,7 @@ def gerar_graficos(df):
     """
     Gera e salva gráficos de desempenho para cada tribunal.
     """
+    print("Iniciando geração de gráficos por tribunal...")
     sns.set(style="whitegrid")
     os.makedirs("GraficosPorTribunal", exist_ok=True)
 
@@ -82,7 +82,6 @@ def gerar_graficos(df):
         metas_presentes = [meta for meta in METAS.keys() if meta in row and pd.notna(row[meta])]
         
         if not metas_presentes: 
-            print(f"Nenhuma meta válida encontrada para o tribunal {tribunal}. Pulando geração de gráfico.")
             continue
 
         valores = row[metas_presentes]
@@ -102,6 +101,45 @@ def gerar_graficos(df):
         plt.tight_layout()
         plt.savefig(f"GraficosPorTribunal/grafico_{tribunal}.png")
         plt.close()
+    print("Gráficos por tribunal gerados na pasta 'GraficosPorTribunal'.")
+
+# --- Função para gerar gráfico consolidado ---
+def gerar_grafico_consolidado(df_resultado):
+    """
+    Gera um gráfico de barras consolidado mostrando a média de cumprimento de cada meta
+    para todos os tribunais.
+    """
+    print("Gerando gráfico consolidado de metas...")
+    sns.set(style="whitegrid")
+    os.makedirs("GraficosConsolidados", exist_ok=True)
+
+    df_medias = df_resultado[list(METAS.keys())].mean().reset_index()
+    df_medias.columns = ['meta', 'valor_medio']
+
+    if df_medias.empty:
+        print("Nenhum dado de meta válido para gerar o gráfico consolidado.")
+        return
+
+    cores = ['green' if v >= 100 else 'red' for v in df_medias['valor_medio']]
+
+    plt.figure(figsize=(14, 7))
+    plt.bar(df_medias['meta'], df_medias['valor_medio'], color=cores)
+    plt.axhline(100, color='gray', linestyle='--', linewidth=1, label='Meta Ideal (100%)')
+
+    for i, v in enumerate(df_medias['valor_medio']):
+        label = f"{v:.2f}"
+        plt.text(i, v + 1, label, ha='center', va='bottom', fontsize=10)
+
+    plt.title("Desempenho Médio das Metas (Todos os Tribunais)")
+    plt.ylabel("% de Cumprimento Médio")
+    plt.xticks(rotation=45, ha='right')
+    plt.ylim(bottom=0) 
+    plt.legend()
+    plt.tight_layout()
+    plt.savefig("GraficosConsolidados/grafico_consolidado_metas.png")
+    plt.close()
+    print("Gráfico consolidado 'grafico_consolidado_metas.png' gerado na pasta 'GraficosConsolidados'.")
+
 
 # -------------------------------------------------------------- Função principal do programa ------------------------------------------------------------------------
 
@@ -113,7 +151,6 @@ def main():
 
     try:
         # DEFINIÇÃO EXPLÍCITA DOS DTYPES: Crucial para evitar erros de inferência e otimizar.
-        # Adicione todas as colunas numéricas como float e 'sigla_tribunal' como str.
         dtypes_explicit = {
             'sigla_tribunal': str,
             'julgados_2025': float, 'casos_novos_2025': float, 'dessobrestados_2025': float, 'suspensos_2025': float,
@@ -130,26 +167,20 @@ def main():
             'julgm8_b': float, 'distm8_b': float, 'suspm8_b': float,
             'julgm10_a': float, 'distm10_a': float, 'suspm10_a': float,
             'julgm10_b': float, 'distm10_b': float, 'suspm10_b': float,
-            # Adicione outras colunas se houverem e forem relevantes, definindo seus tipos
         }
         
-        # Lista de colunas a serem lidas para otimizar o I/O
         columns_to_read = list(dtypes_explicit.keys())
 
-        # Lê o CSV com Dask. dd.read_csv é altamente otimizado e pode usar pyarrow.
         df_dask = dd.read_csv(
             caminho_csv,
-            blocksize="64MB", # Ajuste o tamanho do bloco conforme sua RAM
-            dtype=dtypes_explicit, # APLICA OS TIPOS DEFINIDOS
-            usecols=columns_to_read # USA SOMENTE AS COLUNAS NECESSÁRIAS
+            blocksize="64MB", 
+            dtype=dtypes_explicit, 
+            usecols=columns_to_read 
         )
 
-        # Garante que 'sigla_tribunal' seja string e preenche NaNs antes do groupby com Dask
         df_dask['sigla_tribunal'] = df_dask['sigla_tribunal'].fillna('Desconhecido').astype(str)
 
-        # Função wrapper para processar cada partição e retornar um DataFrame Pandas já agregado
         def processo_de_particao(partition_df):
-         
             resultados_partition = []
             for tribunal, grupo in partition_df.groupby("sigla_tribunal"):
                 resultado_tribunal = {"tribunal": tribunal}
@@ -161,30 +192,24 @@ def main():
                 resultados_partition.append(resultado_tribunal)
             return pd.DataFrame(resultados_partition)
 
-        # Define o esquema (meta) para o DataFrame resultante das operações do Dask
-        # Isso ajuda o Dask a otimizar a execução e a alocar memória corretamente.
         meta_schema = {'tribunal': object}
         for meta_name in METAS.keys():
             meta_schema[meta_name] = np.float64
             
-        # Aplica a função de processamento de partição.
-        # Dask processa cada partição em paralelo.
         df_meta_results = df_dask.map_partitions(
             processo_de_particao, 
-            meta=meta_schema # Esquema de saída para otimização do Dask
+            meta=meta_schema 
         )
 
-        # Agrupa os resultados das partições por tribunal e soma.
-        # O .compute() aciona o cálculo real em paralelo e retorna um DataFrame Pandas.
+        # O .compute() aciona o cálculo real em paralelo com Dask
         df_resultado = df_meta_results.groupby("tribunal").agg({meta: 'sum' for meta in METAS.keys()}).reset_index().compute()
         
-        # Salva o CSV final
         df_resultado.to_csv("ResumoMetas.csv", index=False, float_format="%.2f", na_rep="NA")
         print("Arquivo 'ResumoMetas.csv' gerado.")
 
-        # Gera gráficos baseados no resultado
+        # --- Chamada SEQUENCIAL das funções de geração de gráficos ---
         gerar_graficos(df_resultado)
-        print("Gráficos gerados na pasta 'GraficosPorTribunal'.")
+        gerar_grafico_consolidado(df_resultado)
 
     except FileNotFoundError:
         print(f"Erro: O arquivo '{caminho_csv}' não foi encontrado. Verifique o caminho.")
